@@ -10,7 +10,7 @@ def run():
     inputs = {
         # 'directory': "D:\AI Agent\git_conflict_detector\RebaseAutomation\hello.py",
         # 'file_list_path': 'D:\AI Agent\conflict_files.txt',
-        "log_file_path": r"D:\AI Agent\conflict_files.txt",
+        "log_file_path": r"C:\Users\adars\git_conflict_resolver\conflict.txt",
         'keyword': 'WEBBAR'
     }
 

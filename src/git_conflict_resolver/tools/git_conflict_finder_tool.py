@@ -19,27 +19,27 @@ class GitConflictFinderTool(BaseTool):
     def _run(self, log_file_path: str) -> str:
         base_path = os.environ.get("GIT_BASE_PATH", "").strip()
         if not base_path:
-            logger.error("❌ GIT_BASE_PATH is not set in the environment.")
-            return "❌ GIT_BASE_PATH is not set in the environment."
+            logger.error(" GIT_BASE_PATH is not set in the environment.")
+            return "GIT_BASE_PATH is not set in the environment."
 
         file_paths = self._extract_paths_with_base(log_file_path, base_path)
-        logger.info(f"📄 Extracted {len(file_paths)} valid paths from: {log_file_path}")
+        logger.info(f" Extracted {len(file_paths)} valid paths from: {log_file_path}")
 
         conflicts = self._scan_for_conflict_markers(file_paths)
 
         if not conflicts:
-            logger.info("✅ No merge markers found.")
+            logger.info(" No merge markers found.")
             return "✅ No merge markers found in the extracted files."
 
-        logger.warning(f"⚠️ Found conflicts in {len(conflicts)} files.")
+        logger.warning(f" Found conflicts in {len(conflicts)} files.")
         for path in conflicts:
             logger.warning(f" - {path}")
 
-        return f"⚠️ Found conflicts in {len(conflicts)} files:\n" + "\n".join(conflicts)
+        return f" Found conflicts in {len(conflicts)} files:\n" + "\n".join(conflicts)
 
     def _extract_paths_with_base(self, input_path: str, base_path: str) -> List[str]:
         if not os.path.exists(input_path):
-            logger.error(f"❌ Provided file does not exist: {input_path}")
+            logger.error(f" Provided file does not exist: {input_path}")
             return []
 
         paths = []
@@ -60,7 +60,7 @@ class GitConflictFinderTool(BaseTool):
                 if os.path.isfile(full_path):
                     paths.append(full_path)
                 else:
-                    logger.warning(f"⚠️ Skipped: {full_path} (not a valid file)")
+                    logger.warning(f" Skipped: {full_path} (not a valid file)")
 
         return paths
 
@@ -73,5 +73,5 @@ class GitConflictFinderTool(BaseTool):
                     if all(marker in content for marker in ['<<<<<<<', '=======', '>>>>>>>']):
                         conflicted.append(file_path)
             except Exception as e:
-                logger.error(f"❌ Error reading {file_path}: {e}")
+                logger.error(f" Error reading {file_path}: {e}")
         return conflicted
