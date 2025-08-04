@@ -1,8 +1,9 @@
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
-from git_conflict_resolver.tools.git_conflict_finder_tool import GitConflictFinderTool
-from git_conflict_resolver.tools.git_conflict_resolver_tool import GitConflictResolverTool
+from git_conflict_resolver.tools.git_conflict_finder_tool import git_conflict_finder
+from git_conflict_resolver.tools.git_conflict_reader_tool import read_conflicted_file
+from git_conflict_resolver.tools.git_conflict_resolver_tool import file_line_editor
 from typing import List
 import os
 import agentops
@@ -26,7 +27,7 @@ class GitConflictResolverCrew:
     def conflict_detector(self) -> Agent:
         return Agent(
             config=self.agents_config['conflict_detector'],
-            tools=[GitConflictFinderTool()],
+            tools=[git_conflict_finder()],
             llm=gemini_llm,
             verbose=True
         )
@@ -35,7 +36,7 @@ class GitConflictResolverCrew:
     def conflict_resolver(self) -> Agent:
         return Agent(
             config=self.agents_config['conflict_resolver'],
-            tools=[GitConflictResolverTool()],
+            tools=[read_conflicted_file(), file_line_editor()],
             llm=gemini_llm,
             verbose=True
         )

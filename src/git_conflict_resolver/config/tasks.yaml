@@ -8,11 +8,46 @@ detect_conflicts_task:
 
 resolve_conflicts_task:
   description: >
-    Resolve each of the files with conflicts using the strategy:
-    - If "WEBBAR" exists in only one side, use that.
-    - If both or neither have it, prompt the user.
-    - choose the best code to keep.
-    - If manual editing is chosen, open in VSCode.
+    1. Conflict File Identification:
+      - Recursively scan the provided directory/repository path.
+      - Identify all files that contain standard Git merge conflict markers (<<<<<<<, =======, >>>>>>>).
+    2. Conflict Block Extraction:
+      - For each identified conflict file, parse its content to extract individual conflict blocks. A conflict block spans from the <<<<<<< marker to the >>>>>>> marker, including the ======= separator.
+    3. Information Extraction per Conflict:
+      - For each conflict block found, extract and store the following details:
+        file_path: The absolute path of the file containing this specific conflict.
+        conflict_start_line: The line number where the <<<<<<< marker begins.
+        current_change_content: The complete code content between the <<<<<<< marker and the ======= marker (representing the current branch's changes).
+        incoming_change_content: The complete code content between the ======= marker and the >>>>>>> marker (representing the incoming branch's changes).
+        conflict_end_line: The line number where the >>>>>>> marker ends.
+    4. Apply Resolution Logic (Sequential & Prioritized):
+      For each extracted conflict block, attempt to resolve it by applying the following rules in the specified order. The first rule whose conditions are met should be applied. Once a rule successfully resolves a conflict, proceed to the next conflict block. If no rule applies to a specific conflict block, it should be marked as "unresolved."
+      Rule 1: Empty Current Change.
+        Condition: current_change_content is entirely empty or consists only of whitespace characters (spaces, tabs, newlines, comments if applicable to the file type that effectively make the content "no-op").
+        Action: Replace the entire conflict block (including markers) in the file with incoming_change_content.
+      Rule 2: Current and Incoming Changes are Different (General Accept Both).
+        Condition: current_change_content is distinct from incoming_change_content, and none of the more specific rules (3 through 7) are applicable to this conflict.
+        Action: Concatenate current_change_content followed by incoming_change_content. Remove all conflict markers (<<<<<<<, =======, >>>>>>>, and branch identifiers like HEAD, origin/branch_name) from the resulting combined content. Ensure appropriate line breaks are maintained between the two parts.
+      Rule 3: Difference within WEBBAR Tag.
+        Condition: Both current_change_content and incoming_change_content are largely similar, but the primary difference between them lies exclusively within a <WEBBAR>...</WEBBAR> XML-like tag section.
+        Action: Identify the <WEBBAR> section in both current_change_content and incoming_change_content. Replace the <WEBBAR> section within the current_change_content with the corresponding <WEBBAR> section from incoming_change_content. The rest of the current_change_content should be preserved.
+      Rule 4: Import/Include Conflict.
+        Condition: The conflict block primarily consists of programming language import statements (e.g., Python, Java, JavaScript) or C/C++ #include directives, and current_change_content and incoming_change_content contain different sets of these statements/directives.
+        Action: Combine all unique import/#include statements/directives from both current_change_content and incoming_change_content into a single, de-duplicated, and (optionally) alphabetically sorted block.
+      Rule 5: Type Change in Current.
+        Condition: current_change_content includes a modification that represents a change in data type (e.g., int to long, String to List<String>, or a new type definition) for a variable, function, or class, and the incoming_change_content references the same entity without this type update.
+        Action: Update the type reference in incoming_change_content to reflect the type change present in current_change_content. Then, accept the modified incoming_change_content as the resolution.
+      Rule 6: WEBBAR "if 0" Condition in Incoming.
+        Condition: Within the incoming_change_content, and specifically inside a <WEBBAR>...</WEBBAR> tag, the exact string if 0 or if (0) is present.
+        Action: Replace the entire <WEBBAR> section in the incoming_change_content with the corresponding <WEBBAR> section from the current_change_content. Then, accept this modified incoming_change_content as the resolution.
+      Rule 7: Incoming Code Contains Part of Current with Change.
+        Condition: A significant sub-part of incoming_change_content is identical to a sub-part within current_change_content, but the incoming_change_content's version of that shared sub-part includes an additional or different specific modification (e.g., a new line added within a function that is otherwise identical).
+        Action: Integrate the specific modification from the incoming_change_content's sub-part into the corresponding sub-part within current_change_content. The resulting current_change_content (with the integrated incoming modification) should then be accepted as the resolution. If the incoming change is a complete, distinct replacement for a sub-part within current, but the overall structure favors current, prioritize current_change_content.
+    5. File Modification and Reporting:
+      For each file containing conflicts:
+      If all conflicts within the file were successfully resolved by the rules, overwrite the original conflict file with its new, conflict-free content.
+      If any conflicts within the file remain unresolved (i.e., no rule applied), leave the conflict markers in the file but log its status.
+
   expected_output: >
     All files resolved or marked for manual editing.
   context: [detect_conflicts_task]
@@ -21,10 +56,28 @@ resolve_conflicts_task:
 
 summary_task:
   description: >
-    Create a markdown summary of which files were resolved automatically,
-    which were resolved by user input, and which were left for manual edits.
+    Overall Summary:
+      Total Files Scanned: [Number]
+      Files with Conflicts Found: [Number]
+      Files Successfully Resolved: [Number]
+      Files with Unresolved Conflicts: [Number]
+      Total Conflicts Resolved: [Number]
+      Total Conflicts Unresolved: [Number]
+    Detailed Report (for each file that contained conflicts):
+      File Path: [Absolute path to the file]
+      File Status: "Resolved Successfully" | "Partially Resolved (Unresolved Conflicts Remain)" | "Unresolved (All Conflicts Remain)"
+      Conflicts: (List of details for each conflict block in the file)
+      Conflict Index: [Sequential number for this conflict in the file]
+      Conflict Start Line: [Line number]
+      Conflict End Line: [Line number]
+      Resolution Status: "Resolved" | "Unresolved"
+      Resolution Rule Applied: [e.g., "Rule 1: Empty Current Change", "Rule 4: Import/Include Conflict", or "None" if unresolved]
+      Reason for Unresolution: [e.g., "No rule condition met", "Ambiguous match for semantic rule", "Parsing error"] (Only if Resolution Status is "Unresolved")
+      Original Current Block (Excerpt): [First few lines of current_change_content or a hash]
+      Original Incoming Block (Excerpt): [First few lines of incoming_change_content or a hash]
+      Resolved Content Block (Excerpt): [First few lines of the content after resolution, or "N/A" if unresolved]
   expected_output: >
-    A markdown file summarizing resolution outcomes.
+    Generate a comprehensive summary report for the entire operation.
   context:
     - detect_conflicts_task
     - resolve_conflicts_task
