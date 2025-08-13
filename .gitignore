@@ -1,5 +1,18 @@
 .env
+.venv
 __pycache__/
 .DS_Store
 
 output/
+agentops.log
+*.log
+
+conflicts.md
+conflict_resolution_report.json
+conflict_resolution_report.md
+conflict_resolution_summary.txt
+
+report.json
+report.md
+
+.vscode/

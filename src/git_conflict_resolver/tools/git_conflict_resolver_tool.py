@@ -1,267 +1,319 @@
 from crewai.tools import BaseTool
-from pydantic import BaseModel, Field, PrivateAttr
-from typing import Type, List
-import subprocess
-import os
-from .logger import logger
+from pydantic import BaseModel, Field
+from typing import Type, List, Dict, Any
+from pathlib import Path
+import re
 
+class FixMergeConflictsInput(BaseModel):
+    file_path: str = Field(..., description="The path to the conflicted file.")
+    resolved_blocks: List[Dict[str, Any]] = Field(
+        ..., description="List of resolved conflict blocks with 'start_line', 'end_line', and 'resolved_content'"
+    )
 
-class GitConflictResolverInput(BaseModel):
-    file_path: str = Field(..., description="Path to the file to resolve")
-    keyword: str = Field(default="WEBBAR", description="Keyword to prioritize when resolving conflicts")
+class FixMergeConflictsTool(BaseTool):
+    name: str = "Fix Merge Conflicts in File"
+    description: str = (
+        "Applies resolved conflict blocks into the specified lines of the file, "
+        "preserving the rest of the content and important custom markers like WEBBAR."
+    )
+    args_schema: Type[BaseModel] = FixMergeConflictsInput
 
+    def _run(self, file_path: str, resolved_blocks: List[Dict[str, Any]]) -> str:
+        path = Path(file_path)
 
-class GitConflictResolverTool(BaseTool):
-    name: str = "Git Conflict Resolver"
-    description: str = "Resolves Git conflicts using a keyword or interactive user input."
-    args_schema: Type[BaseModel] = GitConflictResolverInput
+        if not path.exists():
+            return f"File does not exist: {file_path}"
 
-    _auto_resolved: List[str] = PrivateAttr(default_factory=list)
-    _user_resolved: List[str] = PrivateAttr(default_factory=list)
-    _manual_edit_in_place: List[str] = PrivateAttr(default_factory=list)
-    _keyword: str = PrivateAttr(default="WEBBAR")
-
-    def _run(self, file_path: str, keyword: str = "WEBBAR") -> str:
-        self._keyword = keyword
-        logger.info(f"🛠️ Resolving conflicts in: {file_path} with keyword: {keyword}")
-        self._resolve_conflicts_in_file(file_path)
-        return self.generate_summary()
-
-    # def _resolve_conflicts_in_file(self, file_path: str):
-    #     try:
-    #         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-    #             lines = f.readlines()
-    #     except Exception as e:
-    #         logger.error(f"❌ Failed to read {file_path}: {e}")
-    #         return
-
-    #     resolved_lines = []
-    #     i = 0
-    #     while i < len(lines):
-    #         if lines[i].startswith("<<<<<<<"):
-    #             current_block, incoming_block = [], []
-    #             i += 1
-    #             while i < len(lines) and not lines[i].startswith("======="):
-    #                 current_block.append(lines[i])
-    #                 i += 1
-    #             i += 1
-    #             while i < len(lines) and not lines[i].startswith(">>>>>>>"):
-    #                 incoming_block.append(lines[i])
-    #                 i += 1
-    #             i += 1
-
-    #             current_text = "".join(current_block)
-    #             incoming_text = "".join(incoming_block)
-
-    #             current_has = self._keyword in current_text
-    #             incoming_has = self._keyword in incoming_text
-
-    #             if current_has and not incoming_has:
-    #                 logger.info(f"✅ Automatically resolved using current block in {file_path}")
-    #                 resolved_lines.extend(current_block)
-    #                 self._auto_resolved.append(file_path)
-    #             elif incoming_has and not current_has:
-    #                 logger.info(f"✅ Automatically resolved using incoming block in {file_path}")
-    #                 resolved_lines.extend(incoming_block)
-    #                 self._auto_resolved.append(file_path)
-    #             else:
-    #                 logger.warning(f"🤔 Conflict in {file_path} could not be auto-resolved. Prompting user.")
-    #                 self._prompt_user_resolution(
-    #                     file_path, resolved_lines,
-    #                     current_block, incoming_block,
-    #                     current_text, incoming_text
-    #                 )
-    #                 self._user_resolved.append(file_path)
-    #         else:
-    #             resolved_lines.append(lines[i])
-    #             i += 1
-
-    #     if file_path not in self._manual_edit_in_place:
-    #         try:
-    #             with open(file_path, "w", encoding="utf-8") as f:
-    #                 f.writelines(resolved_lines)
-    #             logger.info(f"✍️ File written after conflict resolution: {file_path}")
-    #         except Exception as e:
-    #             logger.error(f"❌ Failed to write file {file_path}: {e}")
-    #     else:
-    #         logger.warning(f"🛑 Skipped overwriting {file_path} — manual edit required.")
-
-
-
-
-    def _resolve_conflicts_in_file(self, file_path: str):
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
+            file_lines = path.read_text(encoding='utf-8').splitlines()
         except Exception as e:
-            logger.error(f"❌ Failed to read {file_path}: {e}")
-            return
+            return f"Failed to read file '{file_path}': {str(e)}"
 
-        resolved_lines = []
-        i = 0
-        while i < len(lines):
-            if lines[i].startswith("<<<<<<<"):
-                current_block, incoming_block = [], []
-                i += 1
-                while i < len(lines) and not lines[i].startswith("======="):
-                    current_block.append(lines[i])
-                    i += 1
-                i += 1
-                while i < len(lines) and not lines[i].startswith(">>>>>>>"):
-                    incoming_block.append(lines[i])
-                    i += 1
-                i += 1
+        try:
+            # Create backup before making changes
+            backup_path = path.with_suffix(path.suffix + '.backup')
+            backup_path.write_text('\n'.join(file_lines) + '\n', encoding='utf-8')
+            
+            # Process conflicts in reverse order to maintain line numbers
+            for conflict in sorted(resolved_blocks, key=lambda c: c["start_line"], reverse=True):
+                start = conflict["start_line"] - 1  # Convert to 0-based index
+                end = conflict["end_line"]          # Slicing end is exclusive
 
-                current_text = "".join(current_block).strip()
-                incoming_text = "".join(incoming_block).strip()
+                # Extract the original conflict block for analysis
+                original_conflict_lines = file_lines[start:end]
+                original_conflict_content = '\n'.join(original_conflict_lines)
+                
+                # Parse the conflict to extract HEAD, INCOMING, and any BASE content
+                conflict_info = self._parse_conflict_block(original_conflict_content)
+                
+                if conflict_info:
+                    # Apply intelligent resolution that preserves WEBBAR and other important content
+                    intelligent_resolution = self._apply_intelligent_resolution(
+                        conflict_info, 
+                        conflict.get("resolved_content", ""),
+                        file_path
+                    )
+                    resolved_lines = intelligent_resolution.splitlines()
+                else:
+                    # Fallback to provided resolution if parsing fails
+                    resolved_lines = conflict["resolved_content"].splitlines()
 
-                # Rule 1: current is empty
-                if not current_text:
-                    logger.info(f"✅ Current block empty → accepted incoming block in {file_path}")
-                    resolved_lines.extend(incoming_block)
-                    self._auto_resolved.append(file_path)
-                    continue
+                # Replace the conflicted lines with resolved lines
+                file_lines[start:end] = resolved_lines
 
-                # Rule 6: 'if (0)' inside WEBBAR
-                if 'WEBBAR' in current_text and 'if (0)' in current_text:
-                    logger.info(f"🚫 Skipping WEBBAR with 'if (0)' → using current block in {file_path}")
-                    resolved_lines.extend(current_block)
-                    self._auto_resolved.append(file_path)
-                    continue
+            # Write final content
+            path.write_text("\n".join(file_lines) + "\n", encoding='utf-8')
+            return f"Successfully resolved and saved conflicts in: {file_path}. Backup created at: {backup_path}"
+            
+        except Exception as e:
+            return f"Failed to resolve conflicts in file '{file_path}': {str(e)}"
 
-                # Rule 3: similar except WEBBAR
-                if self._is_similar_except_webbar(current_text, incoming_text):
-                    logger.info(f"🔍 Similar blocks with WEBBAR difference → using current in {file_path}")
-                    resolved_lines.extend(current_block)
-                    self._auto_resolved.append(file_path)
-                    continue
-
-                # Rule 4: include or import statements
-                if self._is_include_or_import(current_text, incoming_text):
-                    logger.info(f"📦 Includes/imports found → accepted both blocks in {file_path}")
-                    resolved_lines.extend(current_block + incoming_block)
-                    self._auto_resolved.append(file_path)
-                    continue
-
-                # Rule 5: type change
-                if self._has_type_change(current_block, incoming_block):
-                    updated = self._apply_type_change(current_block, incoming_block)
-                    logger.info(f"🔧 Type change detected → patched block in {file_path}")
-                    resolved_lines.extend(updated)
-                    self._auto_resolved.append(file_path)
-                    continue
-
-                # Rule 2: different blocks
-                if current_text != incoming_text:
-                    logger.info(f"🧬 Different blocks → using both in {file_path}")
-                    resolved_lines.extend(current_block + incoming_block)
-                    self._auto_resolved.append(file_path)
-                    continue
-
-                # Prompt fallback
-                logger.warning(f"🧠 Prompting user to resolve {file_path}")
-                self._prompt_user_resolution(
-                    file_path, resolved_lines,
-                    current_block, incoming_block,
-                    current_text, incoming_text
-                )
-                self._user_resolved.append(file_path)
-            else:
-                resolved_lines.append(lines[i])
-                i += 1
-
-        if file_path not in self._manual_edit_in_place:
-            try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.writelines(resolved_lines)
-                logger.info(f"✅ File written after resolution: {file_path}")
-            except Exception as e:
-                logger.error(f"❌ Failed to write file {file_path}: {e}")
+    def _parse_conflict_block(self, conflict_content: str) -> Dict[str, str]:
+        """Parse a conflict block to extract HEAD, INCOMING, and BASE content"""
+        lines = conflict_content.split('\n')
+        
+        head_start = None
+        separator = None
+        base_separator = None
+        incoming_end = None
+        
+        # Find conflict markers
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            if line_stripped.startswith('<<<<<<<'):
+                head_start = i
+            elif line_stripped.startswith('|||||||') and separator is None:
+                base_separator = i
+            elif line_stripped.startswith('=======') and separator is None:
+                separator = i
+            elif line_stripped.startswith('>>>>>>>'):
+                incoming_end = i
+                break
+        
+        if head_start is None or separator is None or incoming_end is None:
+            return None
+        
+        # Extract content sections
+        if base_separator is not None:
+            # 3-way merge
+            head_content = '\n'.join(lines[head_start + 1:base_separator])
+            base_content = '\n'.join(lines[base_separator + 1:separator])
+            incoming_content = '\n'.join(lines[separator + 1:incoming_end])
         else:
-            logger.warning(f"🛑 Manual edit skipped overwrite: {file_path}")
+            # 2-way merge
+            head_content = '\n'.join(lines[head_start + 1:separator])
+            base_content = ""
+            incoming_content = '\n'.join(lines[separator + 1:incoming_end])
+        
+        return {
+            'head': head_content,
+            'incoming': incoming_content,
+            'base': base_content
+        }
 
+    def _apply_intelligent_resolution(self, conflict_info: Dict[str, str], 
+                                    provided_resolution: str, file_path: str) -> str:
+        """Apply intelligent resolution that preserves important custom content"""
+        
+        head_content = conflict_info['head']
+        incoming_content = conflict_info['incoming']
+        base_content = conflict_info.get('base', '')
+        
+        # Check if we have a provided resolution
+        if provided_resolution and provided_resolution.strip():
+            # Enhance the provided resolution by ensuring WEBBAR content is preserved
+            enhanced_resolution = self._preserve_custom_markers(
+                head_content, incoming_content, provided_resolution, file_path
+            )
+            return enhanced_resolution
+        
+        # If no resolution provided, create one intelligently
+        return self._create_intelligent_resolution(head_content, incoming_content, file_path)
 
-    def _prompt_user_resolution(
-        self,
-        file_path: str,
-        resolved_lines: List[str],
-        current_block: List[str],
-        incoming_block: List[str],
-        current_text: str,
-        incoming_text: str
-    ):
-        print(f"\n🔀 Conflict in: {file_path}")
-        print("======= Current Block =======")
-        print(current_text)
-        print("======= Incoming Block =======")
-        print(incoming_text)
-        print("Choose how to resolve:")
-        print("1. Accept current block")
-        print("2. Accept incoming block")
-        print("3. Accept both blocks")
-        print("4. Manual resolve (open in VS Code)")
-
-        choice = input("Your choice (1–4): ").strip()
-
-        if choice == "1":
-            resolved_lines.extend(current_block)
-        elif choice == "2":
-            resolved_lines.extend(incoming_block)
-        elif choice == "3":
-            resolved_lines.extend(current_block + incoming_block)
+    def _preserve_custom_markers(self, head_content: str, incoming_content: str, 
+                               resolution: str, file_path: str) -> str:
+        """Ensure custom markers like WEBBAR are preserved in the resolution"""
+        
+        # Extract custom markers and comments from HEAD content
+        custom_markers = self._extract_custom_markers(head_content)
+        
+        if not custom_markers:
+            return resolution
+        
+        # Check if resolution already contains the custom markers
+        resolution_upper = resolution.upper()
+        missing_markers = []
+        
+        for marker in custom_markers:
+            if marker.upper() not in resolution_upper:
+                missing_markers.append(marker)
+        
+        if not missing_markers:
+            return resolution  # All markers already present
+        
+        # Add missing markers to the resolution
+        file_ext = Path(file_path).suffix.lower()
+        
+        if file_ext in ['.h', '.cc', '.cpp', '.c']:
+            # For C++ files, add missing markers appropriately
+            return self._merge_cpp_with_markers(resolution, missing_markers)
         else:
-            resolved_lines.extend(["<<<<<<< CURRENT VERSION\n"])
-            resolved_lines.extend(current_block)
-            resolved_lines.append("=======\n")
-            resolved_lines.extend(incoming_block)
-            resolved_lines.append(">>>>>>> INCOMING VERSION\n")
+            # For other files, append missing markers
+            return resolution + '\n' + '\n'.join(missing_markers)
 
-            self._manual_edit_in_place.append(file_path)
-            try:
-                logger.info(f"🖊️ Opening {file_path} in VS Code...")
-                subprocess.run(f'code -n "{file_path}"', shell=True, check=False)
-            except Exception as e:
-                logger.error(f"⚠️ Could not open VS Code: {e}")
+    def _extract_custom_markers(self, content: str) -> List[str]:
+        """Extract custom markers and important comments from content"""
+        markers = []
+        lines = content.split('\n')
+        
+        for line in lines:
+            line_stripped = line.strip()
+            # Look for important custom markers
+            if any(keyword in line_stripped.upper() for keyword in 
+                   ['WEBBAR', 'CUSTOM', 'PATCH', 'LOCAL', 'BROWSER']):
+                markers.append(line)
+            # Also preserve comments that look important
+            elif (line_stripped.startswith('//') and 
+                  any(char in line_stripped for char in ['>', '<', '*', '!'])):
+                markers.append(line)
+        
+        return markers
 
-
-    def _is_similar_except_webbar(self, current: str, incoming: str) -> bool:
-        import difflib
-        if 'WEBBAR' in current and 'WEBBAR' in incoming:
-            diff = list(difflib.unified_diff(current.splitlines(), incoming.splitlines()))
-            return len(diff) < 6  # adjustable threshold
-        return False
-
-    def _is_include_or_import(self, current: str, incoming: str) -> bool:
-        return any(line.strip().startswith(("import ", "#include")) for line in (current + incoming).splitlines())
-
-    def _has_type_change(self, current_block: List[str], incoming_block: List[str]) -> bool:
-        import re
-        type_pattern = r"\b(int|float|double|char|bool|str)\b"
-        return any(re.search(type_pattern, line) for line in current_block) and current_block != incoming_block
-
-    def _apply_type_change(self, current_block: List[str], incoming_block: List[str]) -> List[str]:
-        import re
-        type_pattern = r"\b(int|float|double|char|bool|str)\b"
-        result = []
-        for c_line, i_line in zip(current_block, incoming_block):
-            if re.search(type_pattern, c_line):
-                result.append(c_line)
+    def _merge_cpp_with_markers(self, resolution: str, markers: List[str]) -> str:
+        """Intelligently merge C++ resolution with custom markers"""
+        resolution_lines = resolution.split('\n')
+        
+        # Separate includes from other content
+        includes = []
+        other_content = []
+        marker_content = []
+        
+        for line in resolution_lines:
+            if line.strip().startswith('#include'):
+                includes.append(line)
             else:
-                result.append(i_line)
-        return result + incoming_block[len(result):]
+                other_content.append(line)
+        
+        # Process markers
+        for marker in markers:
+            marker_stripped = marker.strip()
+            if marker_stripped.startswith('#include'):
+                # Add to includes if not already present
+                if marker not in includes:
+                    includes.append(marker)
+            else:
+                # Add to marker content
+                marker_content.append(marker)
+        
+        # Reconstruct the content
+        result_parts = []
+        
+        # Add includes first
+        if includes:
+            result_parts.extend(includes)
+        
+        # Add marker content
+        if marker_content:
+            if includes:
+                result_parts.append('')  # Add blank line after includes
+            result_parts.extend(marker_content)
+        
+        # Add other content
+        if other_content and any(line.strip() for line in other_content):
+            if includes or marker_content:
+                result_parts.append('')  # Add blank line
+            result_parts.extend(other_content)
+        
+        return '\n'.join(result_parts)
 
+    def _create_intelligent_resolution(self, head_content: str, incoming_content: str, file_path: str) -> str:
+        """Create an intelligent resolution when none is provided"""
+        file_ext = Path(file_path).suffix.lower()
+        
+        if file_ext in ['.h', '.cc', '.cpp', '.c']:
+            return self._resolve_cpp_conflict(head_content, incoming_content)
+        else:
+            return self._resolve_generic_conflict(head_content, incoming_content)
 
-    def generate_summary(self) -> str:
-        summary = "# Git Conflict Resolution Summary\n\n"
-        summary += "## ✅ Automatically Resolved (keyword matched)\n"
-        summary += "\n".join(f"- {file}" for file in self._auto_resolved)
+    def _resolve_cpp_conflict(self, head_content: str, incoming_content: str) -> str:
+        """Resolve C++ conflicts intelligently"""
+        # Extract includes from both sides
+        head_includes = self._extract_includes(head_content)
+        incoming_includes = self._extract_includes(incoming_content)
+        
+        # Extract non-include content
+        head_other = self._get_non_include_content(head_content)
+        incoming_other = self._get_non_include_content(incoming_content)
+        
+        # Merge includes (remove duplicates, preserve order)
+        all_includes = []
+        seen_includes = set()
+        
+        # Add head includes first
+        for include in head_includes:
+            include_normalized = include.strip()
+            if include_normalized not in seen_includes:
+                all_includes.append(include)
+                seen_includes.add(include_normalized)
+        
+        # Add incoming includes
+        for include in incoming_includes:
+            include_normalized = include.strip()
+            if include_normalized not in seen_includes:
+                all_includes.append(include)
+                seen_includes.add(include_normalized)
+        
+        # Combine all content
+        result_parts = []
+        
+        if all_includes:
+            result_parts.extend(all_includes)
+        
+        # Add non-include content, preserving custom markers
+        if head_other and head_other.strip():
+            if all_includes:
+                result_parts.append('')  # Blank line after includes
+            result_parts.extend(head_other.split('\n'))
+        
+        if incoming_other and incoming_other.strip() and incoming_other != head_other:
+            if all_includes or head_other:
+                result_parts.append('')  # Blank line
+            result_parts.extend(incoming_other.split('\n'))
+        
+        return '\n'.join(result_parts)
 
-        summary += "\n\n## 👤 Resolved by User Input\n"
-        summary += "\n".join(f"- {file}" for file in self._user_resolved)
+    def _extract_includes(self, content: str) -> List[str]:
+        """Extract #include statements"""
+        includes = []
+        for line in content.split('\n'):
+            if line.strip().startswith('#include'):
+                includes.append(line)
+        return includes
 
-        summary += "\n\n## ✍️ Manual Edits In-Place (conflict kept)\n"
-        summary += "\n".join(f"- {file}" for file in self._manual_edit_in_place)
+    def _get_non_include_content(self, content: str) -> str:
+        """Get content that's not #include statements"""
+        non_include_lines = []
+        for line in content.split('\n'):
+            if not line.strip().startswith('#include') and line.strip():
+                non_include_lines.append(line)
+        return '\n'.join(non_include_lines) if non_include_lines else ""
 
-        summary += "\n\n---\nNext steps:\n- Open unresolved files in your editor\n- `git add` and `git commit`\n"
-        logger.info(summary)
-        return summary
+    def _resolve_generic_conflict(self, head_content: str, incoming_content: str) -> str:
+        """Generic conflict resolution preserving custom content"""
+        # Look for important custom markers in head content
+        head_lines = head_content.split('\n')
+        incoming_lines = incoming_content.split('\n')
+        
+        custom_lines = []
+        for line in head_lines:
+            if any(keyword in line.upper() for keyword in 
+                   ['WEBBAR', 'CUSTOM', 'PATCH', 'LOCAL', 'BROWSER']):
+                custom_lines.append(line)
+        
+        # Combine incoming content with custom markers
+        result_lines = incoming_lines[:]
+        
+        if custom_lines:
+            result_lines.extend([''] + custom_lines)  # Add blank line before custom content
+        
+        return '\n'.join(result_lines)

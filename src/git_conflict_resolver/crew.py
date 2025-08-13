@@ -1,9 +1,10 @@
 from crewai import Agent, Crew, Process, Task, LLM
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
-from git_conflict_resolver.tools.git_conflict_finder_tool import git_conflict_finder
-from git_conflict_resolver.tools.git_conflict_reader_tool import read_conflicted_file
-from git_conflict_resolver.tools.git_conflict_resolver_tool import file_line_editor
+from git_conflict_resolver.tools.git_conflict_finder_tool import GitConflictFinderTool
+from git_conflict_resolver.tools.git_conflict_reader_tool import ReadConflictedFileTool
+from git_conflict_resolver.tools.git_conflict_resolver_tool import FixMergeConflictsTool
+from git_conflict_resolver.tools.conflict_summary_tool import ConflictSummaryTool
 from typing import List
 import os
 import agentops
@@ -27,7 +28,7 @@ class GitConflictResolverCrew:
     def conflict_detector(self) -> Agent:
         return Agent(
             config=self.agents_config['conflict_detector'],
-            tools=[git_conflict_finder()],
+            tools=[GitConflictFinderTool()],
             llm=gemini_llm,
             verbose=True
         )
@@ -36,7 +37,7 @@ class GitConflictResolverCrew:
     def conflict_resolver(self) -> Agent:
         return Agent(
             config=self.agents_config['conflict_resolver'],
-            tools=[read_conflicted_file(), file_line_editor()],
+            tools=[ReadConflictedFileTool(), FixMergeConflictsTool()],
             llm=gemini_llm,
             verbose=True
         )
@@ -46,7 +47,10 @@ class GitConflictResolverCrew:
         return Agent(
             config=self.agents_config['summary_reporter'],
             llm=gemini_llm,
-            verbose=True
+            verbose=True,
+            tools=[ConflictSummaryTool()],
+            max_iter=5,
+            memory=True
         )
 
     @agent
@@ -72,10 +76,20 @@ class GitConflictResolverCrew:
 
     @crew
     def crew(self) -> Crew:
+        # return Crew(
+        #     agents=[self.conflict_detector(), self.conflict_resolver(), self.summary_reporter()],  
+        #     tasks=self.tasks,
+        #     manager_agent=self.manager(),  # Manager is separate
+        #     process=Process.hierarchical,
+        #     verbose=True
+        # )
         return Crew(
-            agents=[self.conflict_detector(), self.conflict_resolver(), self.summary_reporter()],  
-            tasks=self.tasks,
-            manager_agent=self.manager(),  # Manager is separate
-            process=Process.hierarchical,
+            agents=[self.conflict_detector(), self.conflict_resolver(), self.summary_reporter()], 
+            tasks=[
+                self.detect_conflicts_task(),
+                self.resolve_conflicts_task(),
+                self.summary_task()
+            ],
+            process=Process.sequential,
             verbose=True
         )

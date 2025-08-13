@@ -1,25 +1,56 @@
-from crewai_tools import tool
+from crewai.tools import BaseTool
+from pydantic import BaseModel, Field
+from typing import Type, List
 from pathlib import Path
+import json
 
-@tool("read_conflicted_file")
-def read_conflicted_file(file_path: str) -> str:
-    """
-    Checks if a file contains Git merge conflict markers (e.g. <<<<<<<, =======, >>>>>>>)
-    and returns a status message.
-    """
-    path = Path(file_path)
+class ReadConflictedFileInput(BaseModel):
+    file_path: str = Field(..., description="Path to the file to check and extract Git merge conflict markers")
 
-    if not path.exists() or not path.is_file():
-        return f"❌ Error: File not found or is not a file -> {file_path}"
+class ReadConflictedFileTool(BaseTool):
+    name: str = "Read Conflicted File"
+    description: str = (
+        "Extracts structured conflict blocks from a file containing Git merge conflict markers "
+        "(e.g. <<<<<<<, =======, >>>>>>>), including line numbers and content. "
+        "Returns data in a format suitable for LLM-based conflict resolution."
+    )
+    args_schema: Type[BaseModel] = ReadConflictedFileInput
 
-    try:
-        content = path.read_text(encoding='utf-8')
-    except Exception as e:
-        return f"❌ Failed to read file '{file_path}': {str(e)}"
+    def _run(self, file_path: str) -> str:
+        path = Path(file_path)
 
-    has_conflicts = all(marker in content for marker in ["<<<<<<<", "=======", ">>>>>>>"])
+        if not path.exists() or not path.is_file():
+            return json.dumps({"error": f"File not found or is not a file: {file_path}"})
 
-    if has_conflicts:
-        return f"⚠️ Merge conflict markers found in file: {file_path}"
-    else:
-        return f"✅ No merge conflicts found in file: {file_path}"
+        try:
+            lines = path.read_text(encoding='utf-8').splitlines()
+        except Exception as e:
+            return json.dumps({"error": f"Failed to read file: {str(e)}"})
+
+        conflicts = []
+        in_conflict = False
+        start_line = 0
+        buffer = []
+
+        for i, line in enumerate(lines, start=1):
+            if line.startswith("<<<<<<<"):
+                in_conflict = True
+                start_line = i
+                buffer = [line]
+            elif in_conflict:
+                buffer.append(line)
+                if line.startswith(">>>>>>>"):
+                    conflicts.append({
+                        "start_line": start_line,
+                        "end_line": i,
+                        "conflicted_content": "\n".join(buffer)
+                    })
+                    in_conflict = False
+                    buffer = []
+
+        result = {
+            "file_path": file_path,
+            "conflicts": conflicts
+        }
+
+        return json.dumps(result, indent=2)
