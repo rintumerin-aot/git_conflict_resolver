@@ -2,7 +2,10 @@ from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 from typing import Type, List, Dict, Any
 from pathlib import Path
-import re
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 class FixMergeConflictsInput(BaseModel):
     file_path: str = Field(..., description="The path to the conflicted file.")
@@ -14,7 +17,7 @@ class FixMergeConflictsTool(BaseTool):
     name: str = "Fix Merge Conflicts in File"
     description: str = (
         "Applies resolved conflict blocks into the specified lines of the file, "
-        "preserving the rest of the content and important custom markers like WEBBAR."
+        "preserving all other content exactly as-is, including WEBBAR tags."
     )
     args_schema: Type[BaseModel] = FixMergeConflictsInput
 
@@ -30,24 +33,19 @@ class FixMergeConflictsTool(BaseTool):
             return f"Failed to read file '{file_path}': {str(e)}"
 
         try:
-            # Create backup before making changes
             backup_path = path.with_suffix(path.suffix + '.backup')
             backup_path.write_text('\n'.join(file_lines) + '\n', encoding='utf-8')
             
-            # Process conflicts in reverse order to maintain line numbers
             for conflict in sorted(resolved_blocks, key=lambda c: c["start_line"], reverse=True):
-                start = conflict["start_line"] - 1  # Convert to 0-based index
-                end = conflict["end_line"]          # Slicing end is exclusive
+                start = conflict["start_line"] - 1
+                end = conflict["end_line"]
 
-                # Extract the original conflict block for analysis
                 original_conflict_lines = file_lines[start:end]
                 original_conflict_content = '\n'.join(original_conflict_lines)
                 
-                # Parse the conflict to extract HEAD, INCOMING, and any BASE content
                 conflict_info = self._parse_conflict_block(original_conflict_content)
                 
                 if conflict_info:
-                    # Apply intelligent resolution that preserves WEBBAR and other important content
                     intelligent_resolution = self._apply_intelligent_resolution(
                         conflict_info, 
                         conflict.get("resolved_content", ""),
@@ -55,13 +53,11 @@ class FixMergeConflictsTool(BaseTool):
                     )
                     resolved_lines = intelligent_resolution.splitlines()
                 else:
-                    # Fallback to provided resolution if parsing fails
+                    logging.warning("Conflict block could not be parsed, using provided resolution.")
                     resolved_lines = conflict["resolved_content"].splitlines()
 
-                # Replace the conflicted lines with resolved lines
                 file_lines[start:end] = resolved_lines
 
-            # Write final content
             path.write_text("\n".join(file_lines) + "\n", encoding='utf-8')
             return f"Successfully resolved and saved conflicts in: {file_path}. Backup created at: {backup_path}"
             
@@ -69,251 +65,128 @@ class FixMergeConflictsTool(BaseTool):
             return f"Failed to resolve conflicts in file '{file_path}': {str(e)}"
 
     def _parse_conflict_block(self, conflict_content: str) -> Dict[str, str]:
-        """Parse a conflict block to extract HEAD, INCOMING, and BASE content"""
         lines = conflict_content.split('\n')
+        head_start, separator, base_separator, incoming_end = None, None, None, None
         
-        head_start = None
-        separator = None
-        base_separator = None
-        incoming_end = None
-        
-        # Find conflict markers
         for i, line in enumerate(lines):
-            line_stripped = line.strip()
-            if line_stripped.startswith('<<<<<<<'):
+            stripped = line.strip()
+            if stripped.startswith('<<<<<<<'):
                 head_start = i
-            elif line_stripped.startswith('|||||||') and separator is None:
+            elif stripped.startswith('|||||||') and separator is None:
                 base_separator = i
-            elif line_stripped.startswith('=======') and separator is None:
+            elif stripped.startswith('=======') and separator is None:
                 separator = i
-            elif line_stripped.startswith('>>>>>>>'):
+            elif stripped.startswith('>>>>>>>'):
                 incoming_end = i
                 break
         
         if head_start is None or separator is None or incoming_end is None:
             return None
         
-        # Extract content sections
         if base_separator is not None:
-            # 3-way merge
-            head_content = '\n'.join(lines[head_start + 1:base_separator])
-            base_content = '\n'.join(lines[base_separator + 1:separator])
-            incoming_content = '\n'.join(lines[separator + 1:incoming_end])
+            return {
+                'head': '\n'.join(lines[head_start + 1:base_separator]),
+                'base': '\n'.join(lines[base_separator + 1:separator]),
+                'incoming': '\n'.join(lines[separator + 1:incoming_end])
+            }
         else:
-            # 2-way merge
-            head_content = '\n'.join(lines[head_start + 1:separator])
-            base_content = ""
-            incoming_content = '\n'.join(lines[separator + 1:incoming_end])
-        
-        return {
-            'head': head_content,
-            'incoming': incoming_content,
-            'base': base_content
-        }
+            return {
+                'head': '\n'.join(lines[head_start + 1:separator]),
+                'base': "",
+                'incoming': '\n'.join(lines[separator + 1:incoming_end])
+            }
 
     def _apply_intelligent_resolution(self, conflict_info: Dict[str, str], 
                                     provided_resolution: str, file_path: str) -> str:
-        """Apply intelligent resolution that preserves important custom content"""
-        
         head_content = conflict_info['head']
         incoming_content = conflict_info['incoming']
-        base_content = conflict_info.get('base', '')
-        
-        # Check if we have a provided resolution
+
         if provided_resolution and provided_resolution.strip():
-            # Enhance the provided resolution by ensuring WEBBAR content is preserved
-            enhanced_resolution = self._preserve_custom_markers(
-                head_content, incoming_content, provided_resolution, file_path
-            )
-            return enhanced_resolution
-        
-        # If no resolution provided, create one intelligently
+            logging.info("Rule 8: Using provided resolution with WEBBAR preservation.")
+            return self._preserve_custom_markers(head_content, incoming_content, provided_resolution, file_path)
+
+        logging.info("Auto-resolving conflict...")
         return self._create_intelligent_resolution(head_content, incoming_content, file_path)
 
     def _preserve_custom_markers(self, head_content: str, incoming_content: str, 
                                resolution: str, file_path: str) -> str:
-        """Ensure custom markers like WEBBAR are preserved in the resolution"""
-        
-        # Extract custom markers and comments from HEAD content
         custom_markers = self._extract_custom_markers(head_content)
-        
         if not custom_markers:
             return resolution
-        
-        # Check if resolution already contains the custom markers
+
         resolution_upper = resolution.upper()
-        missing_markers = []
-        
-        for marker in custom_markers:
-            if marker.upper() not in resolution_upper:
-                missing_markers.append(marker)
-        
-        if not missing_markers:
-            return resolution  # All markers already present
-        
-        # Add missing markers to the resolution
-        file_ext = Path(file_path).suffix.lower()
-        
-        if file_ext in ['.h', '.cc', '.cpp', '.c']:
-            # For C++ files, add missing markers appropriately
-            return self._merge_cpp_with_markers(resolution, missing_markers)
-        else:
-            # For other files, append missing markers
-            return resolution + '\n' + '\n'.join(missing_markers)
+        missing_markers = [m for m in custom_markers if m.upper() not in resolution_upper]
+
+        if missing_markers:
+            logging.info("Rule 3: Preserving missing WEBBAR/custom blocks from HEAD.")
+        return resolution + ("\n\n" + "\n\n".join(missing_markers) if missing_markers else "")
 
     def _extract_custom_markers(self, content: str) -> List[str]:
-        """Extract custom markers and important comments from content"""
-        markers = []
-        lines = content.split('\n')
-        
-        for line in lines:
-            line_stripped = line.strip()
-            # Look for important custom markers
-            if any(keyword in line_stripped.upper() for keyword in 
-                   ['WEBBAR', 'CUSTOM', 'PATCH', 'LOCAL', 'BROWSER']):
+        markers, block, inside_webbar = [], [], False
+        for line in content.split('\n'):
+            stripped = line.strip()
+            if stripped.startswith(("# WEBBAR", "// WEBBAR", "<!-- WEBBAR")):
+                inside_webbar, block = True, [line]
+                continue
+            if inside_webbar:
+                block.append(line)
+                if stripped.endswith(("# />", "// />", "<!-- /> -->")):
+                    markers.append("\n".join(block))
+                    inside_webbar, block = False, []
+                continue
+            if any(k in stripped.upper() for k in ['CUSTOM', 'PATCH', 'LOCAL', 'BROWSER']):
                 markers.append(line)
-            # Also preserve comments that look important
-            elif (line_stripped.startswith('//') and 
-                  any(char in line_stripped for char in ['>', '<', '*', '!'])):
-                markers.append(line)
-        
+        if inside_webbar and block:
+            markers.append("\n".join(block))
         return markers
 
-    def _merge_cpp_with_markers(self, resolution: str, markers: List[str]) -> str:
-        """Intelligently merge C++ resolution with custom markers"""
-        resolution_lines = resolution.split('\n')
-        
-        # Separate includes from other content
-        includes = []
-        other_content = []
-        marker_content = []
-        
-        for line in resolution_lines:
-            if line.strip().startswith('#include'):
-                includes.append(line)
-            else:
-                other_content.append(line)
-        
-        # Process markers
-        for marker in markers:
-            marker_stripped = marker.strip()
-            if marker_stripped.startswith('#include'):
-                # Add to includes if not already present
-                if marker not in includes:
-                    includes.append(marker)
-            else:
-                # Add to marker content
-                marker_content.append(marker)
-        
-        # Reconstruct the content
-        result_parts = []
-        
-        # Add includes first
-        if includes:
-            result_parts.extend(includes)
-        
-        # Add marker content
-        if marker_content:
-            if includes:
-                result_parts.append('')  # Add blank line after includes
-            result_parts.extend(marker_content)
-        
-        # Add other content
-        if other_content and any(line.strip() for line in other_content):
-            if includes or marker_content:
-                result_parts.append('')  # Add blank line
-            result_parts.extend(other_content)
-        
-        return '\n'.join(result_parts)
-
     def _create_intelligent_resolution(self, head_content: str, incoming_content: str, file_path: str) -> str:
-        """Create an intelligent resolution when none is provided"""
-        file_ext = Path(file_path).suffix.lower()
-        
-        if file_ext in ['.h', '.cc', '.cpp', '.c']:
+        ext = Path(file_path).suffix.lower()
+        if ext in ['.h', '.cc', '.cpp', '.c']:
             return self._resolve_cpp_conflict(head_content, incoming_content)
         else:
             return self._resolve_generic_conflict(head_content, incoming_content)
 
     def _resolve_cpp_conflict(self, head_content: str, incoming_content: str) -> str:
-        """Resolve C++ conflicts intelligently"""
-        # Extract includes from both sides
         head_includes = self._extract_includes(head_content)
         incoming_includes = self._extract_includes(incoming_content)
-        
-        # Extract non-include content
         head_other = self._get_non_include_content(head_content)
         incoming_other = self._get_non_include_content(incoming_content)
-        
-        # Merge includes (remove duplicates, preserve order)
-        all_includes = []
-        seen_includes = set()
-        
-        # Add head includes first
-        for include in head_includes:
-            include_normalized = include.strip()
-            if include_normalized not in seen_includes:
-                all_includes.append(include)
-                seen_includes.add(include_normalized)
-        
-        # Add incoming includes
-        for include in incoming_includes:
-            include_normalized = include.strip()
-            if include_normalized not in seen_includes:
-                all_includes.append(include)
-                seen_includes.add(include_normalized)
-        
-        # Combine all content
-        result_parts = []
-        
-        if all_includes:
-            result_parts.extend(all_includes)
-        
-        # Add non-include content, preserving custom markers
-        if head_other and head_other.strip():
-            if all_includes:
-                result_parts.append('')  # Blank line after includes
-            result_parts.extend(head_other.split('\n'))
-        
-        if incoming_other and incoming_other.strip() and incoming_other != head_other:
-            if all_includes or head_other:
-                result_parts.append('')  # Blank line
-            result_parts.extend(incoming_other.split('\n'))
-        
-        return '\n'.join(result_parts)
+
+        all_includes, seen = [], set()
+        for inc in head_includes + incoming_includes:
+            if inc.strip() not in seen:
+                all_includes.append(inc)
+                seen.add(inc.strip())
+
+        logging.info("Rule 4: Preserving both sets of #include directives.")
+
+        result = []
+        if all_includes: result.extend(all_includes)
+        if head_other.strip(): result.extend([""] + head_other.splitlines())
+        if incoming_other.strip() and incoming_other != head_other:
+            result.extend([""] + incoming_other.splitlines())
+        return "\n".join(result)
 
     def _extract_includes(self, content: str) -> List[str]:
-        """Extract #include statements"""
-        includes = []
-        for line in content.split('\n'):
-            if line.strip().startswith('#include'):
-                includes.append(line)
-        return includes
+        return [line for line in content.splitlines() if line.strip().startswith("#include")]
 
     def _get_non_include_content(self, content: str) -> str:
-        """Get content that's not #include statements"""
-        non_include_lines = []
-        for line in content.split('\n'):
-            if not line.strip().startswith('#include') and line.strip():
-                non_include_lines.append(line)
-        return '\n'.join(non_include_lines) if non_include_lines else ""
+        return "\n".join([l for l in content.splitlines() if l.strip() and not l.strip().startswith("#include")])
 
     def _resolve_generic_conflict(self, head_content: str, incoming_content: str) -> str:
-        """Generic conflict resolution preserving custom content"""
-        # Look for important custom markers in head content
-        head_lines = head_content.split('\n')
-        incoming_lines = incoming_content.split('\n')
-        
-        custom_lines = []
-        for line in head_lines:
-            if any(keyword in line.upper() for keyword in 
-                   ['WEBBAR', 'CUSTOM', 'PATCH', 'LOCAL', 'BROWSER']):
-                custom_lines.append(line)
-        
-        # Combine incoming content with custom markers
-        result_lines = incoming_lines[:]
-        
-        if custom_lines:
-            result_lines.extend([''] + custom_lines)  # Add blank line before custom content
-        
-        return '\n'.join(result_lines)
+        custom_blocks = self._extract_custom_markers(head_content)
+        result_lines = incoming_content.splitlines()
+
+        if not head_content.strip():
+            logging.info("Rule 1: HEAD is empty → taking INCOMING.")
+            return incoming_content
+        elif custom_blocks:
+            logging.info("Rule 3: Conflict inside WEBBAR → keeping WEBBAR from HEAD.")
+            return "\n".join(result_lines + [""] + custom_blocks)
+        elif head_content.strip() != incoming_content.strip():
+            logging.info("Rule 2: Different logic → concatenating both versions.")
+            return head_content + "\n\n" + incoming_content
+        else:
+            logging.info("Rule 8: Could not auto-resolve → keeping INCOMING for safety.")
+            return incoming_content

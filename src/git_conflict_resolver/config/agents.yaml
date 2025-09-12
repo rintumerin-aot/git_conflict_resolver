@@ -18,10 +18,10 @@ summary_reporter:
     You analyze the results from detection and resolution phases, calculate statistics, and identify which files need human 
     intervention. Your reports help developers understand the scope of work completed and what requires their attention.
 
-manager:
-  role: Conflict Resolution Manager
-  goal: Oversee and coordinate the entire Git conflict resolution workflow
-  backstory: >
-    You are the orchestrator of the conflict resolution process. You assign tasks to the appropriate agents,
-    ensure smooth handoff between detection, resolution, and reporting, and handle any unexpected issues or escalations.
-    Your expertise lies in managing complex workflows and ensuring all conflicts are addressed efficiently.
+# manager:
+#   role: Conflict Resolution Manager
+#   goal: Oversee and coordinate the entire Git conflict resolution workflow
+#   backstory: >
+#     You are the orchestrator of the conflict resolution process. You assign tasks to the appropriate agents,
+#     ensure smooth handoff between detection, resolution, and reporting, and handle any unexpected issues or escalations.
+#     Your expertise lies in managing complex workflows and ensuring all conflicts are addressed efficiently.

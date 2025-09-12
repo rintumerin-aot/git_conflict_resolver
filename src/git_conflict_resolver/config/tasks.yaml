@@ -24,12 +24,8 @@ detect_conflicts_task:
 
 resolve_conflicts_task:
   description: >
-    Your goal is to merge these changes intelligently, preserving the intended functionality and logic while removing redundant or conflicting lines.
-
-    The final result must be a fully resolved file with no merge markers.
-    Use the `Fix Merge Conflicts in File` tool to overwrite the original file with the resolved content.
-
-    Your output must be the complete, corrected content of the file.
+    Read the conflicted file and resolve merge conflicts **only by calling the FixMergeConflictsTool**. 
+     Do not attempt to explain or summarize — your final answer MUST be the output of the tool.
 
   expected_output: >
     A valid, conflict-free version of the file, saved successfully with all merge conflict markers resolved.

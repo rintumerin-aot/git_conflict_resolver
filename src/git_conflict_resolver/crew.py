@@ -21,8 +21,8 @@ gemini_llm = LLM(
 
 @CrewBase
 class GitConflictResolverCrew:
-    agents_config = 'config/agents.yaml'  # Add this
-    tasks_config = 'config/tasks.yaml'    # Add this
+    agents_config = 'config/agents.yaml'
+    tasks_config = 'config/tasks.yaml'
 
     @agent
     def conflict_detector(self) -> Agent:
@@ -39,7 +39,9 @@ class GitConflictResolverCrew:
             config=self.agents_config['conflict_resolver'],
             tools=[ReadConflictedFileTool(), FixMergeConflictsTool()],
             llm=gemini_llm,
-            verbose=True
+            verbose=True,
+            max_rpm=30,
+            max_retry=3,
         )
 
     @agent
